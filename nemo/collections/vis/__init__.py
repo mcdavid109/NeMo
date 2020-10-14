@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from nemo.collections.vis import datasets
+from nemo.collections.vis import datasets, data_utils
 from nemo.package_info import __version__
 
 # Set collection version equal to NeMo version.
