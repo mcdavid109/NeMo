@@ -16,16 +16,19 @@ __author__ = "Anh Tuan Nguyen"
 
 
 from os import makedirs
-from os.path import expanduser, join, exists, isdir
+from os.path import expanduser, join, exists
+
+from glob import glob
 
 import json
 import cv2
+import numpy as np
 from PIL import Image
 
 import torch
 from torchvision.transforms import transforms
 from torchvision.io import read_video
-from torchvision.datasets.utils import download_and_extract_archive, check_md5
+from torchvision.datasets.utils import download_and_extract_archive, check_md5, download_url
 
 from typing import Any, Optional
 from dataclasses import dataclass
@@ -37,9 +40,6 @@ from nemo.utils import logging
 from nemo.core.classes import Dataset
 
 # from nemo.core.neural_types import CategoricalValuesType, ChannelType, MaskType, NeuralType, RegressionValuesType
-
-from nemo.utils.configuration_parsing import get_value_from_dictionary, get_value_list_from_dictionary
-from nemo.utils.configuration_error import ConfigurationError
 
 # Create the config store instance.
 cs = ConfigStore.instance()
@@ -95,46 +95,54 @@ class CLEVRER(Dataset):
 
 	data/clevrer
 	videos/
-		train/
-			video_00000-01000
-			...
-			video_09000-10000
-		val/
-			video_10000-11000
-			...
-			video_14000-15000
-		test/
-			video_15000-16000
-			...
-			video_19000-20000
+	(train)
+		video_00000-01000
+		...
+		video_09000-10000
+	(val)
+		video_10000-11000
+		...
+		video_14000-15000
+	(test)
+		video_15000-16000
+		...
+		video_19000-20000
+	
 	annotations/
-		train/
+	(train)
 			annotation_00000-01000
 			...
 			annotation_09000-10000
-		val/
+	(val)
 			annotation_11000-12000
 			...
 			annotation_14000-15000
-	questions/
+	
+	question/
 		train.json
 		validation.json
 		test.json
+
+	video_frames/ (Optional)
+		sim_00000/ frame_00000.jpg, frame_00001.jpg, ...
+		sim_00001/ frame_00000.jpg, frame_00001.jpg, ...
+		...
+		sim_19999/ frame_00000.jpg, frame_00001.jpg, ...
 
 	.. _website: http://clevrer.csail.mit.edu/
 
 	.._paper: https://arxiv.org/pdf/1910.01442
 
 	"""
-	download_url_prefix_videos = "http://data.csail.mit.edu/clevrer/videos"
-	download_url_prefix_annotations = "http://data.csail.mit.edu/clevrer/annotations"
-	download_url_prefix_questions = "http://data.csail.mit.edu/clevrer/questions"
+	download_url_prefix_videos = "http://data.csail.mit.edu/clevrer/videos/"
+	download_url_prefix_annotations = "http://data.csail.mit.edu/clevrer/annotations/"
+	download_url_prefix_questions = "http://data.csail.mit.edu/clevrer/questions/"
 
-	videos_names = {"train": "video_train.zip", "dev": "video_validation.zip", "test": "video_test.zip"}
-	videos_md5s = {"train": "8bcd8cda154e813ce009b2ee226abf7c", "dev": "948abe8ec22083de11796919cbee36eb", "test": "3cfa74a01e8527026a589343a4d1fd9e"}
-	annotations_names = {"train": "annotation_train.zip", "dev": "annotation_validation.zip"}
-	annotations_md5s = {"train": "41656fca05e59a673e46763162375b6d", "dev": "e64f0eb54e37e6f96f27139c7182f497"}
-	question_names = {"train": "train.json", "dev": "validation.json", "test": "test.json"}
+	videos_names = {"train": "video_train.zip", "validation": "video_validation.zip", "test": "video_test.zip"}
+	videos_md5s = {"train": "8bcd8cda154e813ce009b2ee226abf7c", "validation": "948abe8ec22083de11796919cbee36eb", "test": "3cfa74a01e8527026a589343a4d1fd9e"}
+	annotations_names = {"train": "annotation_train.zip", "validation": "annotation_validation.zip"}
+	annotations_md5s = {"train": "41656fca05e59a673e46763162375b6d", "validation": "e64f0eb54e37e6f96f27139c7182f497"}
+	question_names = {"train": "train.json", "validation": "validation.json", "test": "test.json"}
 
 	def __init__(
 		self,
@@ -151,7 +159,7 @@ class CLEVRER(Dataset):
 		Args:
 		root: Folder where task will store data (DEFAULT: "~/data/clevrer")
 			split: Defines the set (split) that will be used (Options: train | val | test) (DEFAULT: train)
-			stream_images: Flag indicating whether the task will return frames from the video (DEFAULT: True)
+			stream_frames: Flag indicating whether the task will return frames from the video (DEFAULT: True)
 			transform: TorchVision image preprocessing/augmentations to apply (DEFAULT: None)
 			download: downloads the data if not present (DEFAULT: True)
 		"""
@@ -162,13 +170,12 @@ class CLEVRER(Dataset):
 		# Get the absolute path.
 		self._root = expanduser(root)
 
+		# if don't have the root, create it
+		if not exists(self._root):
+			makedirs(self._root)
+
 		# Process split.
-		self._split = get_value_from_dictionary(
-			split,
-			"train | val | test".split(
-				" | "
-			),
-		)
+		self._split = split
 
 		# Download dataset when required.
 		if download:
@@ -178,9 +185,11 @@ class CLEVRER(Dataset):
 		self._stream_frames = stream_frames
 
 		# Set original image dimensions.
-		self._height = 320
-		self._width = 480
+		self._height = 480
+		self._width = 320
 		self._depth = 3
+
+		self._end_points = np.arange(0, 21000, 1000)
 
 		# Save image transform(s).
 		self._image_transform = transform
@@ -205,13 +214,19 @@ class CLEVRER(Dataset):
 		logging.info("Setting image size to [D  x H x W]: {} x {} x {}".format(self._depth, self._height, self._width))
 
 		if self._split == 'train':
-			data_file = join(self._root, "questions", 'train.json')
-		elif self._split == 'val':
-			data_file = join(self._root, "questions", 'validation.json')
+			data_file = join(self._root, "question", 'train.json')
+		elif self._split == 'validation':
+			data_file = join(self._root, "question", 'validation.json')
 		elif self._split == 'test':
-			data_file = join(self._root, "questions", 'test.json')
+			data_file = join(self._root, "question", 'test.json')
 		else:
-			raise ConfigurationError("Split `{}` not supported yet".format(self._split))
+			raise ValueError("Split `{}` not supported yet".format(self._split))
+
+		# Video frames folder
+		self._video_frames = join(self._root, "video_frames")
+
+		if not exists(self._video_frames):
+			makedirs(self._video_frames)
 
 		# Load data from file.
 		self.data = self.load_data(data_file)
@@ -223,7 +238,7 @@ class CLEVRER(Dataset):
 		if "answer" not in sample.keys():
 			sample["answer"] = "<UNK>"
 		logging.info(
-			"Exemplary sample number {}\n  question_type: {}\n  question_subtype: {}\n  question_id: {}\n question: {}\n  answer: {}".format(
+			"Exemplary sample number: {}\n  question_type: {}\n  question_subtype: {}\n  question_id: {}\n question: {}\n  answer: {}".format(
 				i,
 				sample["question_type"],
 				sample["question_subtype"],
@@ -234,26 +249,26 @@ class CLEVRER(Dataset):
 		)
 
 	def _check_integrity(self) -> bool:
-		dataset_split = ["train", "val", "test"]
-		ret = False
-		for split in dataset_split:
-			# Check video files
-			videofile = join(self._root, self.videos_names[split])
-			videochecksum = self.videos_md5s[split]
-			if not exists(videofile):
-				logging.info("Cannot find video files")
-				return False
-			ret = ret | check_md5(fpath=videofile, md5=videochecksum)
+		# Check md5 and return the result.
+		split = self._split
+		# Check video files
+		videofile = join(self._root, "videos", self.videos_names[split])
+		videochecksum = self.videos_md5s[split]
+		if not exists(videofile):
+			logging.info("Cannot find video files")
+			return False
+		ret = check_md5(fpath=videofile, md5=videochecksum)
 
+		if split == "train" or split == "validation":
 			# Check annotations files
-			annotationfile = join(self._root, self.annotations_names[split])
+			annotationfile = join(self._root, "annotations", self.annotations_names[split])
 			annotationchecksum = self.annotations_md5s[split]
 			if not exists(annotationfile):
 				logging.info("Cannot find annotation files")
-			return False
-			ret = ret | check_md5(fpath=annotationfile, md5=annotationchecksum)
+				return False
+			ret = ret & check_md5(fpath=annotationfile, md5=annotationchecksum)
 		logging.info('Files already downloaded, checking integrity...')
-		# Check md5 and return the result.
+
 		return ret
 
 	def download(self) -> None:
@@ -263,36 +278,35 @@ class CLEVRER(Dataset):
 		# Else: download (once again).
 		logging.info('Downloading and extracting archive')
 
-		# Download videos, annotations, questions
-		dataset_split = ["train", "val", "test"]
-		for split in dataset_split:
-			# Download video files
-			videofile = self.videos_names[split]
-			videourl = self.download_url_prefix_videos + "videos" + "/" + self.video_names[split]
-			videochecksum = self.videos_md5s[split]
-			videodir = join(self._root, "videos", split)
-			if not isdir(videodir):
-				makedirs(videodir)
-			download_and_extract_archive(videourl, download_root=videodir, filename=videofile, md5=videochecksum)
+		split = self.
+_split
+		# Download video files
+		videofile = self.videos_names[split]
+		videourl = self.download_url_prefix_videos + split + '/' + self.videos_names[split]
+		videochecksum = self.videos_md5s[split]
+		videodir = join(self._root, "videos")
+		if not exists(videodir):
+			makedirs(videodir)
+		download_and_extract_archive(videourl, download_root=videodir, filename=videofile, md5=videochecksum)
 
+		# Download questions files
+		questionfile = self.question_names[split]
+		questionurl = self.download_url_prefix_questions + self.question_names[split]
+		questiondir = join(self._root, "question")
+		if not exists(questiondir):
+			makedirs(questiondir)
+		download_url(questionurl, root=questiondir, filename=questionfile)
+
+		if split == "train" or split == "validation":
 			# Download annotation files
 			annotationfile = self.annotations_names[split]
-			annotationurl = self.download_url_prefix_annotations + "annotations" + "/" + self.annotations_names[split]
+			annotationurl = self.download_url_prefix_annotations + split + '/' + self.annotations_names[split]
 			annotationchecksum = self.annotations_md5s[split]
-			# create annotation dir and extracy
-			annotationdir = join(self._root, "annotation", split)
-			if not isdir(annotationdir):
+			# create annotation dir and extract
+			annotationdir = join(self._root, "annotations")
+			if not exists(annotationdir):
 				makedirs(annotationdir)
 			download_and_extract_archive(annotationurl, download_root=annotationdir, filename=annotationfile, md5=annotationchecksum)
-
-			# Download questions files
-			questionfile = self.question_names[split]
-			questionurl = self.download_url_prefix_questions + "questions" + "/" + self.question_names[split]
-			questiondir = join(self._root, "question")
-			if not isdir(questiondir):
-				makedirs(questiondir)
-			download_url(questionurl, root=questiondir, filename=questionfile)
-
 
 	def load_data(self, source_data_file):
 		"""
@@ -302,7 +316,7 @@ class CLEVRER(Dataset):
 		dataset = []
 
 		with open(source_data_file) as f:
-			logging.info("Loading samples from '{}'...".format(source_data_file[i]))
+			logging.info("Loading samples from '{}'...".format(source_data_file))
 			data = json.load(f)
 			for questions in data:
 				for question in questions['questions']:
@@ -320,27 +334,68 @@ class CLEVRER(Dataset):
 		"""
 		return len(self.data)
 
-	def get_frames(self, video_filename):
+	def get_frames(self, video_index):
 		"""
 		Function loads and returns video frames along with its size.
 		Additionally, it performs all the required transformations.
 
 		Args:
-			img_id: Identifier of the images.
+			video_index: Identifier of the video.
 
 		Returns:
-			image (PIL Image / Tensor, depending on the applied transforms)
+			List of video frames (PIL Image / Tensor, depending on the applied transforms)
 		"""
 
-		# Load the image and convert to RGB.
-		img = Image.open(join(self._split_image_folder, img_id)).convert('RGB')
+		# Directory to save the frames
+		frame_dir = join(self._video_frames, "sim_%05d" % video_index)
 
-		if self._image_transform is not None:
-			# Apply transformation(s).
-			img = self._image_transform(img)
+		# Check which directory our video belong to
+		prev_endpoint = 0
+		for idx, end_point in enumerate(self._end_points):
+			if idx > 0:
+				if video_index in range(prev_endpoint, end_point):
+					video_dir = join(self._root, "videos", "video_%05d" % prev_endpoint + "-" + "%05d" % end_point)
+					video_file = join(video_dir, "video_%05d.mp4" % video_index)
+					break
+				prev_endpoint = end_point
 
-		# Return image.
-		return img
+		# Extract frame once, reused later
+		if not exists(frame_dir):
+			makedirs(frame_dir) 
+			frame_extractor = cv2.VideoCapture(video_file) 
+		
+			currentframe = 0
+		
+			while(True):
+				# extract frames from videos
+				ret, frame = frame_extractor.read()
+				if ret: 
+					filename = 'frame_%05d.jpg' % currentframe
+					frame_file = join(frame_dir, filename)
+					logging.info('Creating frame file: ' + filename) 
+					# store frame into file
+					cv2.imwrite(frame_file, frame) 
+					currentframe += 1
+				else: 
+					logging.info('Finish extracting frame from the video')
+					break
+
+		# Using PIL to read the frames from file
+		num_frames = len(glob(join(frame_dir, 'frame_*.jpg')))
+
+		frames = []
+		for frame in range(num_frames):
+			# Load the image and convert to RGB
+			img = Image.open(join(frame_dir, 'frame_%05d.jpg' % frame)).convert('RGB')
+
+			if self._image_transform is not None:
+				# Apply transformation(s).
+				img = self._image_transform(img)
+			# Save the frame
+			frames.append(img)
+	
+		# Return frame list.
+		return frames
 
 	def __getitem__(self, index):
 		"""
@@ -350,21 +405,22 @@ class CLEVRER(Dataset):
 			index: index of the sample to return.
 
 		Returns:
-			indices, images_ids, images, questions, answers, question_types, spatial_features, object_features, object_normalized_bbox, scene_graph 
+			indices, video_id, frames, question_id, questions, answers, question_types, question_subtypes
 		"""
 		# Get item.
 		item = self.data[index]
 
 		# Load and stream the image ids.
-		img_id = item["imageId"]
+		video_index = item["scene_index"]
 
 		# Load the adequate image - only when required.
-		if self._stream_images:
-			img = self.get_image(img_id)
+		if self._stream_frames:
+			frames = self.get_frames(video_index)
 		else:
-			img = None
+			frames = None
 
 		# Return question.
+		question_id = item["question_id"]
 		question = item["question"]
 
 		# Return answer.
@@ -373,33 +429,12 @@ class CLEVRER(Dataset):
 		else:
 			answer = "<UNK>"
 
-		# Question type related variables.
-		if "types" in item.keys():
-			question_type = item["types"]
-		else:
-			question_type = "<UNK>"
-
-		# Load images features and scene graphs
-		if self._extract_features:
-			# Spatial features
-			if self._load_spatial_features:
-				spatial_features = self._spatial_features_loader.load_feature(img_id)
-			else:
-				spatial_features = None
-			# Object features
-			if self._load_object_features:
-				object_features, object_normalized_bbox, _ = self._object_features_loader.load_feature_normalized_bbox(img_id)
-			else:
-				object_features = None
-				object_normalized_bbox = None
-			# Scene graph
-			if self._load_scene_graph:
-				scene_graph_features, _ , _ =  self._scene_graph_loader.load_feature_normalized_bbox(img_id)
-			else:
-				scene_graph_features = None
+		# Question type
+		question_type = item["question_type"]
+		question_subtype = item["question_subtype"]
 
 		# Return sample.
-		return index, img_id, img, question, answer, question_type, spatial_features, object_features, object_normalized_bbox, scene_graph_features
+		return index, video_index, frames, question_id, question, answer, question_type, question_subtype
 
 	def collate_fn(self, batch):
 		"""
@@ -409,46 +444,30 @@ class CLEVRER(Dataset):
 			batch: list of individual samples to combine
 
 		Returns:
-			Batch of: indices, images_ids, images, questions, answers, question_types, spatial_features, object_features, object_normalized_bbox, scene_graph 
+			Batch of: indices, video_id, frames, question_id, questions, answers, question_types, question_subtypes
 
 		"""
 		# Collate indices.
 		indices_batch = [sample[0] for sample in batch]
 
-		# Stack images_ids and images.
-		img_ids_batch = [sample[1] for sample in batch]
+		# Stack video_ids and list of frames.
+		video_ids_batch = [sample[1] for sample in batch]
 
-		if self._stream_images:
-			imgs_batch = torch.stack([sample[2] for sample in batch]).type(torch.FloatTensor)
+		# stack list of frames
+		if self._stream_frames:
+			frames_batch = [sample[2] for sample in batch]
 		else:
-			imgs_batch = None
+			frames_batch = None
 
 		# Collate questions and answers
-		questions_batch = [sample[3] for sample in batch]
-		answers_batch = [sample[4] for sample in batch]
+		question_id_batch = [sample[3] for sample in batch]
+		questions_batch = [sample[4] for sample in batch]
+		answers_batch = [sample[5] for sample in batch]
 
 		# Collate question_types 
-		question_type_batch = [sample[5] for sample in batch]
-
-		# Collate images features
-		if self._extract_features:
-			# Spatial features
-			if self._load_spatial_features:
-				spatial_features_batch = [sample[6] for sample in batch]
-			else:
-				spatial_features_batch = None
-			# Object features
-			if self._load_object_features:
-				object_features_batch = [sample[7] for sample in batch]
-			else:
-				object_features_batch = None
-			# Scene graph
-			if self._load_scene_graph:
-				scene_graph_batch = [sample[8] for sample in batch]
-			else:
-				scene_graph_batch = None
-
+		question_type_batch = [sample[6] for sample in batch]
+		question_subtype_batch = [sample[7] for sample in batch]
+		
 		# Return collated dict.
-		return indices_batch, img_ids_batch, imgs_batch, questions_batch, answers_batch, question_type_batch, spatial_features_batch, object_features_batch, scene_graph_batch
-
+		return indices_batch, video_ids_batch, frames_batch, question_id_batch, questions_batch, answers_batch, question_type_batch, question_subtype_batch
 

@@ -369,7 +369,7 @@ class CLEVR(Dataset):
             ]
 
         logging.info(
-            "Exemplary sample {} ({}):\n  question_type: {} ({})\n  image_ids: {}\n  question: {}\n  answer: {}".format(
+            "Exemplary sample {}\n  question_type: {} ({})\n  image_ids: {}\n  question: {}\n  answer: {}\n".format(
                 i,
                 sample["question_index"],
                 sample["question_type_ids"],

@@ -21,9 +21,10 @@ from os.path import expanduser, join, exists
 import json
 from PIL import Image
 
+from glob import glob
+
 import torch
 from torchvision.transforms import transforms
-from torchvision.datasets.utils import download_and_extract_archive, check_md5
 
 from typing import Any, Optional
 from dataclasses import dataclass
@@ -34,12 +35,7 @@ from hydra.core.config_store import ConfigStore
 from nemo.utils import logging
 from nemo.core.classes import Dataset
 
-# from nemo.core.neural_types import CategoricalValuesType, ChannelType, MaskType, NeuralType, RegressionValuesType
-
-from nemo.utils.configuration_parsing import get_value_from_dictionary, get_value_list_from_dictionary
-from nemo.utils.configuration_error import ConfigurationError
-
-from nemo.collections.vis.utils.gqa.features.feature_loader import SpatialFeatureLoader, ObjectsFeatureLoader, SceneGraphFeatureLoader
+from nemo.collections.vis.data_utils import SpatialFeatureLoader, ObjectsFeatureLoader, SceneGraphFeatureLoader
 # Create the config store instance.
 cs = ConfigStore.instance()
 
@@ -137,7 +133,7 @@ class GQA(Dataset):
 
 	"""
 
-	download_url_prefix = "https://nlp.stanford.edu/data/gqa"
+	download_url_prefix = "https://nlp.stanford.edu/data/gqa/"
 	zip_names = {"scene": "sceneGraphs.zip", "questions": "questions1.2.zip", "images": "images.zip"}
 	features_names = {"spatial": "spatialFeatures.zip", "object": "objectFeatures.zip"}
 	zip_md5s = {"scene": "d93e1360598166e3222715e81c950de6", "questions": "e28f02144d5086871827574db4752720", "images": "ce0e89c03830722434d7f20a41b05342"}
@@ -179,16 +175,11 @@ class GQA(Dataset):
 		self._root = expanduser(root)
 
 		# if don't have the root, create it
-		if not os.path.exists(self._root):
-			os.makedirs(self._root)
+		if not exists(self._root):
+			makedirs(self._root)
 
 		# Process split.
-		self._split = get_value_from_dictionary(
-			split,
-			"train | val | test".split(
-				" | "
-			),
-		)
+		self._split = split
 
 		# Download dataset when required.
 		if download:
@@ -204,8 +195,8 @@ class GQA(Dataset):
 		self._load_scene_graph = load_scene_graph
 
 		# Set original image dimensions.
-		self._height = 640
-		self._width = 480
+		self._height = 480
+		self._width = 640
 		self._depth = 3
 
 		# Number of objects
@@ -216,10 +207,10 @@ class GQA(Dataset):
 		self._object_features_loader = None
 		self._scene_graph_loader = None
 
-		self._vocab_object_file = './utils/gqa/vocab_files/objects_gqa.txt'
-		self._vocab_attributes_file = './utils/gqa/vocab_files/attributes_gqa.txt'
-		self._vocab_question_file = './utils/gqa/vocab_files/questions_gqa.txt'
-		self._vocab_answers_file = './utils/gqa/vocab_files/answers_gqa.txt'
+		self._vocab_object_file = './data_utils/gqa/vocab_files/objects.txt'
+		self._vocab_attributes_file = './data_utils/gqa/vocab_files/attributes.txt'
+		self._vocab_question_file = './data_utils/gqa/vocab_files/questions.txt'
+		self._vocab_answers_file = './data_utils/gqa/vocab_files/answers.txt'
 
 		# Save image transform(s).
 		self._image_transform = transform
@@ -256,7 +247,7 @@ class GQA(Dataset):
 			if self._split == 'train':
 				scene_graph_dirs = join(self._root, "sceneGraphs", 'train_sceneGraphs.json')
 				self._scene_graph_loader = SceneGraphFeatureLoader(scene_graph_dirs, self._vocab_object_file, self._vocab_attributes_file, self._num_objects)
-			elif self._split == 'val':
+			elif self._split == 'validation':
 				scene_graph_dirs = join(self._root, "sceneGraphs", 'val_sceneGraphs.json')
 				self._scene_graph_loader = SceneGraphFeatureLoader(scene_graph_dirs, self._vocab_object_file, self._vocab_attributes_file, self._num_objects)
 
@@ -265,21 +256,20 @@ class GQA(Dataset):
 			# Training split folder and file with data question.
 			if self._dataset_type == "all":
 				num_files = len(glob(join(self._root, "questions", "train_all_questions", 'train_all_questions_*.json')))
-				data_file = [join(self._root, "questions", "train_all_questions", 'train_all_questions_%d.json' % n) 
-							 for n in range(num_files)]
+				data_file = [join(self._root, "questions", "train_all_questions", 'train_all_questions_%d.json' % n) for n in range(num_files)]
 			elif self._dataset_type == "balanced":
 				data_file = join(self._root, "questions", 'train_balanced_questions.json')
 			else:
-				raise ConfigurationError("Dataset type `{}` not supported yet".format(self._dataset_type))
+				raise ValueError("Dataset type `{}` not supported yet".format(self._dataset_type))
 
-		elif self._split == 'val':
+		elif self._split == 'validation':
 			# Validation split folder and file with data question.
 			if self._dataset_type == "all":
 				data_file = join(self._root, "questions", 'val_all_questions.json')
 			elif self._dataset_type == "balanced":
 				data_file = join(self._root, "questions", 'val_balanced_questions.json')
 			else:
-				raise ConfigurationError("Dataset type `{}` not supported yet".format(self._dataset_type))
+				raise ValueError("Dataset type `{}` not supported yet".format(self._dataset_type))
 
 		elif self._split == 'test':
 			# Test split folder and file with data question.
@@ -288,9 +278,9 @@ class GQA(Dataset):
 			elif self._dataset_type == "balanced":
 				data_file = join(self._root, "questions", 'test_balanced_questions.json')
 			else:
-				raise ConfigurationError("Dataset type `{}` not supported yet".format(self._dataset_type))
+				raise ValueError("Dataset type `{}` not supported yet".format(self._dataset_type))
 		else:
-			raise ConfigurationError("Split `{}` not supported yet".format(self._split))
+			raise ValueError("Split `{}` not supported yet".format(self._split))
 
 		# Load data from file.
 		self.data = self.load_data(data_file)
@@ -313,48 +303,49 @@ class GQA(Dataset):
 		)
 
 	def _check_integrity(self) -> bool:
-		# Check questions
-		questionfile = join(self._root, self.zip_names["questions"])
+		# We always return questions
+		questionfile = join(self._root, "questions", self.zip_names["questions"])
 		questionchecksum = self.zip_md5s["questions"]
 		if not exists(questionfile):
 			logging.info("Cannot find question files")
 			return False
 		ret = check_md5(fpath=questionfile, md5=questionchecksum)
 
-		# Check scene graph
+		# In case we want to return ground truth scene graph
 		if self._load_scene_graph:
-			scenefile = join(self._root, self.zip_names["scene"])
+			scenefile = join(self._root, "sceneGraphs", self.zip_names["scene"])
 			scenechecksum = self.zip_md5s["scene"]
 			if not exists(scenefile):
 				logging.info("Cannot find scene graph files")
 			return False
-			ret = ret | check_md5(fpath=scenefile, md5=scenechecksum)
+			ret = ret & check_md5(fpath=scenefile, md5=scenechecksum)
 
-		# Check raw images or features
+		# In case we want to return features
 		if self._extract_features:
-			# Check spatial features (from ResNet101)
+			# spatial features (from ResNet101)
 			if self._load_spatial_features:
-				spatialfile = join(self._root, self.features_names["spatial"])
+				spatialfile = join(self._root, "spatial", self.features_names["spatial"])
 				spatialchecksum = self.features_md5s["spatial"]
 				if not exists(spatialfile):
 					logging.info("Cannot find spatial features files")
 					return False
-				ret = ret | check_md5(fpath=spatialfile, md5=spatialchecksum)
-			# Check object features (from Fast-RNN)
+				ret = ret & check_md5(fpath=spatialfile, md5=spatialchecksum)
+			# object features (from Faster-RNN)
 			elif self._load_object_features:
 				objectfile = join(self._root, self.features_names["object"])
 				objectchecksum = self.features_md5s["object"]
 				if not exists(objectfile):
 					logging.info("Cannot find object features files")
 					return False
-				ret = ret | check_md5(fpath=objectfile, md5=objectchecksum)
-		else:
-			imagefile = join(self._root, self.zip_names["images"])
+				ret = ret & check_md5(fpath=objectfile, md5=objectchecksum)
+		# In case we want to return images
+		if self._stream_images:
+			imagefile = join(self._root, "images", self.zip_names["images"])
 			imagechecksum = self.zip_md5s["images"]
 			if not exists(imagefile):
 				logging.info("Cannot find image files")
 				return False
-			ret = ret | check_md5(fpath=imagefile, md5=imagechecksum)
+			ret = ret & check_md5(fpath=imagefile, md5=imagechecksum)
 
 		logging.info('Files already downloaded, checking integrity...')
 		# Check md5 and return the result.
@@ -367,41 +358,41 @@ class GQA(Dataset):
 		# Else: download (once again).
 		logging.info('Downloading and extracting archive')
 
-		# Download scene graph (optional), questions and images or features
+		# We always return questions
 		questionfile = self.zip_names["questions"]
 		questionurl = self.download_url_prefix + self.zip_names["questions"]
 		questionchecksum = self.zip_md5s["questions"]
-		# create questions dir and extract
 		questiondir = join(self._root, "questions")
-		if not os.path.exists(questiondir):
-			os.makedirs(questiondir)
-		# Download and extract files
+		if not exists(questiondir):
+			makedirs(questiondir)
 		download_and_extract_archive(questionurl, download_root=questiondir, filename=questionfile, md5=questionchecksum)
 
-		 if self._load_scene_graph:
+		# In case we want to return scene graph
+		if self._load_scene_graph:
 			scenefile = self.zip_names["scene"]
 			sceneurl = self.download_url_prefix + self.zip_names["scene"]
 			scenechecksum = self.zip_md5s["scene"]
-			# create scene dir and extracy
 			scenedir = join(self._root, "sceneGraphs")
-			if not os.path.exists(scenedir):
-				os.makedirs(scenedir)
+			if not exists(scenedir):
+				makedirs(scenedir)
 			download_and_extract_archive(sceneurl, download_root=scenedir, filename=scenefile, md5=scenechecksum)
 
+		# In case we want to return features
 		if self._extract_features:
-			# Check spatial features (from ResNet101)
+			# spatial features (from ResNet-101)
 			if self._load_spatial_features:
 				spatialfile = self.features_names["spatial"]
 				spatialurl = self.download_url_prefix + self.features_names["spatial"]
 				download_and_extract_archive(spatialurl, download_root=self._root, filename=spatialfile, md5=spatialchecksum)
 
-			# Check object features (from Fast-RNN)
+			# object features (from Faster-RNN)
 			elif self._load_object_features:
 				objectfile = self.features_names["object"]
 				objecturl = self.download_url_prefix + self.features_names["object"]
 				objectchecksum = self.features_md5s["object"]
 				download_and_extract_archive(objecturl, download_root=self._root, filename=objectfile, md5=objectchecksum)
-		else:
+		# In case we want to return images
+		if self._stream_images:
 			imagefile = self.zip_names["images"]
 			imageurl = self.download_url_prefix + self.zip_names["images"]
 			imagechecksum = self.zip_md5s["images"]
@@ -417,7 +408,7 @@ class GQA(Dataset):
 
 		# train_all case
 		if isinstance(source_data_file, list):
-			for i in range len(source_data_file):
+			for i in range(len(source_data_file)):
 				with open(source_data_file[i]) as f:
 					logging.info("Loading samples from '{}'...".format(source_data_file[i]))
 					data = json.load(f)
@@ -544,11 +535,11 @@ class GQA(Dataset):
 			else:
 				object_features = None
 				object_normalized_bbox = None
-			# Scene graph
-			if self._load_scene_graph:
-				scene_graph_features, _ , _ =  self._scene_graph_loader.load_feature_normalized_bbox(img_id)
-			else:
-				scene_graph_features = None
+		# Scene graph
+		if self._load_scene_graph:
+			scene_graph_features, _ , _ =  self._scene_graph_loader.load_feature_normalized_bbox(img_id)
+		else:
+			scene_graph_features = None
 
 		# Return sample.
 		return index, img_id, img, question, answer, question_type, spatial_features, object_features, object_normalized_bbox, scene_graph_features
@@ -592,15 +583,15 @@ class GQA(Dataset):
 			# Object features
 			if self._load_object_features:
 				object_features_batch = [sample[7] for sample in batch]
+				object_normalized_bbox_batch = [sample[8] for sample in batch]
 			else:
 				object_features_batch = None
-			# Scene graph
-			if self._load_scene_graph:
-				scene_graph_batch = [sample[8] for sample in batch]
-			else:
-				scene_graph_batch = None
+				object_normalized_bbox_batch = None
+		# Scene graph
+		if self._load_scene_graph:
+			scene_graph_batch = [sample[9] for sample in batch]
+		else:
+			scene_graph_batch = None
 
 		# Return collated dict.
-		return indices_batch, img_ids_batch, imgs_batch, questions_batch, answers_batch, question_type_batch, spatial_features_batch, object_features_batch, scene_graph_batch
-
-
+		return indices_batch, img_ids_batch, imgs_batch, questions_batch, answers_batch, question_type_batch, spatial_features_batch, object_features_batch, object_normalized_bbox_batch, scene_graph_batch
