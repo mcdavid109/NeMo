@@ -466,26 +466,3 @@ class CLEVRER(Dataset):
 		
 		# Return collated dict.
 		return indices_batch, video_ids_batch, frames_batch, question_id_batch, questions_batch, answers_batch, question_type_batch, question_subtype_batch
-
-if __name__ == "__main__":
-
-	""" 
-	Unit test that checks data dimensions match expected values, and generates an image.
-	"""
-
-	# Test parameters
-	batch_size = 8
-
-	# Create problem - task Go
-	clevrer_dataset = CLEVRER(split='test')
-
-	clevrer_dataset.__getitem__(1)
-
-
-	# Set up Dataloader iterator
-	from torch.utils.data import DataLoader
-
-	dataloader = DataLoader(
-		dataset=clevrer_dataset, collate_fn=clevrer_dataset.collate_fn, batch_size=batch_size, shuffle=True, num_workers=8
-	)
-	print('Done!')
