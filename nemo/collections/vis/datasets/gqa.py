@@ -20,7 +20,6 @@ from os.path import expanduser, join, exists
 
 import json
 from PIL import Image
-
 from glob import glob
 
 import torch
@@ -35,7 +34,7 @@ from hydra.core.config_store import ConfigStore
 from nemo.utils import logging
 from nemo.core.classes import Dataset
 
-from nemo.collections.vis.data_utils import SpatialFeatureLoader, ObjectsFeatureLoader, SceneGraphFeatureLoader
+from nemo.collections.vis.datasets.data_utils import SpatialFeatureLoader, ObjectsFeatureLoader, SceneGraphFeatureLoader
 # Create the config store instance.
 cs = ConfigStore.instance()
 
@@ -199,18 +198,19 @@ class GQA(Dataset):
 		self._width = 640
 		self._depth = 3
 
-		# Number of objects
-		self._num_objects = 100
-
 		# Features and scene graph loader
 		self._spatial_features_loader = None
 		self._object_features_loader = None
 		self._scene_graph_loader = None
 
-		self._vocab_object_file = './data_utils/gqa/vocab_files/objects.txt'
-		self._vocab_attributes_file = './data_utils/gqa/vocab_files/attributes.txt'
-		self._vocab_question_file = './data_utils/gqa/vocab_files/questions.txt'
-		self._vocab_answers_file = './data_utils/gqa/vocab_files/answers.txt'
+		vocab_object_file = './data_utils/vocab_files/objects.txt'
+		vocab_attributes_file = './data_utils/vocab_files/attributes.txt'
+		vocab_question_file = './data_utils/vocab_files/questions.txt'
+		vocab_answers_file = './data_utils/vocab_files/answers.txt'
+		vocab_relations_file = './data_utils/vocab_files/relations.txt'
+
+		# Number of objects
+		num_objects = 100
 
 		# Save image transform(s).
 		self._image_transform = transform
@@ -246,10 +246,10 @@ class GQA(Dataset):
 		if self._load_scene_graph:
 			if self._split == 'train':
 				scene_graph_dirs = join(self._root, "sceneGraphs", 'train_sceneGraphs.json')
-				self._scene_graph_loader = SceneGraphFeatureLoader(scene_graph_dirs, self._vocab_object_file, self._vocab_attributes_file, self._num_objects)
+				self._scene_graph_loader = SceneGraphFeatureLoader(scene_graph_dirs, vocab_object_file, vocab_attributes_file, vocab_relations_file, num_objects)
 			elif self._split == 'validation':
 				scene_graph_dirs = join(self._root, "sceneGraphs", 'val_sceneGraphs.json')
-				self._scene_graph_loader = SceneGraphFeatureLoader(scene_graph_dirs, self._vocab_object_file, self._vocab_attributes_file, self._num_objects)
+				self._scene_graph_loader = SceneGraphFeatureLoader(scene_graph_dirs, vocab_object_file, vocab_attributes_file, vocab_relations_file, num_objects)
 
 		# Set split-dependent data.
 		if self._split == 'train':
@@ -531,18 +531,25 @@ class GQA(Dataset):
 				spatial_features = None
 			# Object features
 			if self._load_object_features:
-				object_features, object_normalized_bbox, _ = self._object_features_loader.load_feature_normalized_bbox(img_id)
+				result = self._object_features_loader.load_feature_normalized_bbox(img_id)
+				# We extract object features and bounding box coordinates
+				obj_features = result[0]
+				obj_normalized_bbox = result[1]
 			else:
-				object_features = None
-				object_normalized_bbox = None
+				obj_features = None
+				obj_normalized_bbox = None
 		# Scene graph
 		if self._load_scene_graph:
-			scene_graph_features, _ , _ =  self._scene_graph_loader.load_feature_normalized_bbox(img_id)
+			result =  self._scene_graph_loader.load_feature_normalized_bbox(img_id)
+			# We extract object names, attributes and relations from scene graph
+			obj_attributes = result[0]
+			obj_relations = result[1]
 		else:
-			scene_graph_features = None
+			obj_attributes = None
+			obj_relations = None
 
 		# Return sample.
-		return index, img_id, img, question, answer, question_type, spatial_features, object_features, object_normalized_bbox, scene_graph_features
+		return index, img_id, img, question, answer, question_type, spatial_features, obj_features, obj_normalized_bbox, obj_attributes, obj_relations
 
 	def collate_fn(self, batch):
 		"""
@@ -552,7 +559,7 @@ class GQA(Dataset):
 			batch: list of individual samples to combine
 
 		Returns:
-			Batch of: indices, images_ids, images, questions, answers, question_types, spatial_features, object_features, object_normalized_bbox, scene_graph 
+			Batch of: indices, images_ids, images, questions, answers, question_types, spatial_features, obj_features, obj_normalized_bbox, obj_attributes, obj_relations 
 
 		"""
 		# Collate indices.
@@ -582,16 +589,19 @@ class GQA(Dataset):
 				spatial_features_batch = None
 			# Object features
 			if self._load_object_features:
-				object_features_batch = [sample[7] for sample in batch]
-				object_normalized_bbox_batch = [sample[8] for sample in batch]
+				obj_features_batch = [sample[7] for sample in batch]
+				obj_normalized_bbox_batch = [sample[8] for sample in batch]
 			else:
-				object_features_batch = None
-				object_normalized_bbox_batch = None
+				obj_features_batch = None
+				obj_normalized_bbox_batch = None
 		# Scene graph
 		if self._load_scene_graph:
-			scene_graph_batch = [sample[9] for sample in batch]
+			obj_attributes_batch = [sample[9] for sample in batch]
+			obj_relations_batch = [sample[10] for sample in batch]
 		else:
-			scene_graph_batch = None
+			obj_attributes_batch = None
+			obj_relations_batch = None
 
 		# Return collated dict.
-		return indices_batch, img_ids_batch, imgs_batch, questions_batch, answers_batch, question_type_batch, spatial_features_batch, object_features_batch, object_normalized_bbox_batch, scene_graph_batch
+		return indices_batch, img_ids_batch, imgs_batch, questions_batch, answers_batch, question_type_batch, \
+		 spatial_features_batch, obj_features_batch, obj_normalized_bbox_batch, obj_attributes_batch, obj_relations_batch
